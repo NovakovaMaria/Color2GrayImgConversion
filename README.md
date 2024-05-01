@@ -6,6 +6,8 @@ Implementation of color-to-gray image conversion using salient colors and radial
 
 This method employs quantization of an image’s salient colors combined with radial basis functions (RBFs) to convert color images to grayscale. It optimizes contrast retention by mapping a small set of dominant colors, identified through k-means clustering, to corresponding grayscale intensities. This ensures the preservation of important visual contrasts in the resultant grayscale images, making it effective for applications where contrast fidelity is crucial.
 
+Additionally, this method adapts differently when converting natural versus synthetic images. For natural images, which often have a wider range of colors and subtler gradients, the process focuses on preserving the richness and depth of the original scene. For synthetic images, which typically feature more defined and fewer colors, the conversion emphasizes clarity and accuracy in replicating the distinct colors and sharp contrasts. Examples of conversions for both natural and synthetic images are provided below.
+
 **Three main steps** of this color-to-gray image conversion:
 
     1. Quantization Process
