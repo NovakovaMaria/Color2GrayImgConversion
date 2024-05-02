@@ -1,3 +1,10 @@
+/*
+* Author of the code: Mária Nováková
+* Author of the paper: Zhang L., Wan Y.
+* Date of implementation: 28.04.2024
+* Description: Implementation of color-to-gray image conversion using salient colors and radial basis functions.
+*/
+
 #ifndef ZHANGWAN24_HPP
 #define ZHANGWAN24_HPP
 
