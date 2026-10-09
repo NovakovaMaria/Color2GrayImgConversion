@@ -83,6 +83,9 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
     int position_mse;
     
     // create new centroids from selected centroid (in this case c_0)
+    // (take the stored centre: after the updates above it is no longer bit-identical to c_0,
+    //  and expandCentroids() finds the centre to replace by exact comparison)
+    c_0 = centers[0];
     expandCentroids(c_0, k, imageLab, &centers);
 
     // iterate till maximum number condition is not met
