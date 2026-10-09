@@ -330,14 +330,15 @@ Vec3f ColorToGrayConverter::computePrincipalDirection(const Mat& image) {
  * @param centers centroids (quantizied colors)
  */
 void ColorToGrayConverter::expandCentroids(Vec3f c_0, int &k, Mat img, vector<Vec3f> *centers) {
-    Vec3f sigma(1.0f / 255.0f,1.0f / 255.0f, 1.0f / 255.0f);
+    // delta = 1/255 on a [0,1] scale (paper, Eq. 1); the Lab values here are on a 0-255 scale, so delta = 1
+    const float delta = 1.0f;
 
     // compute PCA
     Vec3f D_pca = computePrincipalDirection(img);
 
     // compute new centroids / colors
-    Vec3f N_c1 = c_0 + sigma * D_pca;
-    Vec3f N_c2 = c_0 - sigma * D_pca;
+    Vec3f N_c1 = c_0 + delta * D_pca;
+    Vec3f N_c2 = c_0 - delta * D_pca;
 
     // remove old color
     auto it = find(centers->begin(), centers->end(), c_0);
