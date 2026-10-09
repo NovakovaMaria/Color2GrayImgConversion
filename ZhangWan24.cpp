@@ -7,6 +7,35 @@
 
 #include "ZhangWan24.hpp"
 
+// CIELab of a BGR image, normalised to [0,1] like the paper normalises all values to [0,1]:
+// L/100, (a+128)/255, (b+128)/255 (this is OpenCV's 8-bit Lab encoding divided by 255)
+static Mat normalizedLab(const Mat &bgr8) {
+    Mat bgr, lab;
+    bgr8.convertTo(bgr, CV_32F, 1/255.0);
+    cvtColor(bgr, lab, COLOR_BGR2Lab);                       // L in [0,100], a and b around [-128,127]
+    lab = lab.reshape(1, static_cast<int>(lab.total()));
+    lab.col(0) *= 1/100.0;
+    lab.col(1) = (lab.col(1) + 128.0) / 255.0;
+    lab.col(2) = (lab.col(2) + 128.0) / 255.0;
+    return lab.reshape(3, bgr8.rows);
+}
+
+// normalised Lab (see normalizedLab) of one colour given as BGR in [0,1]
+static Vec3f labOfBGR(const Vec3f &bgr) {
+    Mat px(1, 1, CV_32FC3, Scalar(bgr[0], bgr[1], bgr[2])), lab;
+    cvtColor(px, lab, COLOR_BGR2Lab);
+    Vec3f t = lab.at<Vec3f>(0, 0);
+    return Vec3f(t[0] / 100.0f, (t[1] + 128.0f) / 255.0f, (t[2] + 128.0f) / 255.0f);
+}
+
+// RGB values (BGR order, [0,1]) of the pixels of one cluster as an N x 1 three-channel matrix,
+// used for the split of Eq. (1), which is done in RGB (paper, Fig. 4 and Fig. 5)
+static Mat clusterPixels(const Mat &rgbImage, const vector<pair<Point, Vec3f>> &cluster) {
+    Mat data(static_cast<int>(cluster.size()), 1, CV_32FC3);
+    for (size_t i = 0; i < cluster.size(); i++) data.at<Vec3f>(static_cast<int>(i)) = rgbImage.at<Vec3f>(cluster[i].first);
+    return data;
+}
+
 /************ PART 1 ************/
 
 /**
@@ -20,27 +49,31 @@
  */
 void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float theta_0, float theta_1) {
     
-    cv::Mat imagefloat, imageLab, grayImage, output1;
+    cv::Mat imagefloat, imageLab, grayImage, grayImage8, output1;
 
     // image to grayscale
     image.convertTo(imagefloat, CV_32F, 1/255.0);
     cvtColor(imagefloat, grayImage, COLOR_BGR2GRAY);
-    
-    // image to CIE colors space
-    cvtColor(image, imageLab, COLOR_BGR2Lab);
-    imageLab.convertTo(imageLab, CV_32F);
+    cvtColor(image, grayImage8, COLOR_BGR2GRAY); // 8-bit gray for the entropy histogram
+
+    // image to CIE colors space, normalised to [0,1]
+    imageLab = normalizedLab(image);
+
+    // colours are quantised in RGB with the perceptual distance in CIELab (paper, Fig. 4b and 5b "our method"):
+    // centroids are mean RGB colours, stored as their Lab values so that all distances are CIELab distances (Eq. 2)
+    this->rgbImage = imagefloat;
 
     // determine type of the image (synthetic vs natural)
-    float E = Entropy(grayImage);
+    float E = Entropy(grayImage8);
     bool classif = classification(E);
 
     // determine first centroid color, it is mean of all values in the image
-    Scalar meanScalar = mean(imageLab);
+    Scalar meanScalar = mean(imagefloat);
     float mse_k_prev, m_k_prev;
 
-    Vec3f c_0(static_cast<float>(meanScalar[0]), 
+    Vec3f c_0 = labOfBGR(Vec3f(static_cast<float>(meanScalar[0]), 
                     static_cast<float>(meanScalar[1]), 
-                    static_cast<float>(meanScalar[2]));
+                    static_cast<float>(meanScalar[2])));
 
     vector<Vec3f> centers;
     centers.push_back(c_0);
@@ -56,7 +89,7 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
         mse_k = MSE_k(imageLab, centers, clusters);
 
         // STEP 5
-        if (((abs(mse_k - prevMSE_k)) / prevMSE_k) < pow(10, -6)) break;
+        if (mse_k == 0 || ((abs(mse_k - prevMSE_k)) / prevMSE_k) < pow(10, -6)) break;
 
         clusters = clusterImage(imageLab, centers);
 
@@ -82,7 +115,10 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
     int position_mse;
     
     // create new centroids from selected centroid (in this case c_0)
-    expandCentroids(c_0, k, imageLab, &centers);
+    // (take the stored centre: after the updates above it is no longer bit-identical to c_0,
+    //  and expandCentroids() finds the centre to replace by exact comparison)
+    c_0 = centers[0];
+    expandCentroids(c_0, k, clusterPixels(rgbImage, clusters[0]), &centers);
 
     // iterate till maximum number condition is not met
     while (k <= max_k) {
@@ -92,8 +128,6 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
         // STEP 3
         actualizeCenters(&centers, clusters);
 
-        MSE(centers, clusters, &individualMSE);
-
         // STEP 4
         prevMSE_k = numeric_limits<float>::max();
         do {
@@ -101,7 +135,7 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
             mse_k = MSE_k(imageLab, centers, clusters);
 
             // STEP 5
-            if (((abs(mse_k - prevMSE_k)) / prevMSE_k) < pow(10, -6)) break;
+            if (mse_k == 0 || ((abs(mse_k - prevMSE_k)) / prevMSE_k) < pow(10, -6)) break;
 
             clusters = clusterImage(imageLab, centers);
 
@@ -120,7 +154,12 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
         m_k = M_k(mse_k, mseg_k);
 
         // select centroid for new expansion, it is the one with biggest MSE
-        float minMSE = numeric_limits<float>::min();
+        // (MSE of the converged clusters of this iteration only)
+        individualMSE.clear();
+        MSE(centers, clusters, &individualMSE);
+
+        float minMSE = -1.0f;
+        position_mse = 0;
 
         for (size_t i = 0; i < individualMSE.size(); i++){
             if (minMSE < individualMSE[i]){
@@ -131,7 +170,8 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
 
         c_0 = centers[position_mse];
 
-        expandCentroids(c_0, k, imageLab, &centers);
+        // principal direction of the pixels that belong to c_0 (paper, Sec. 3.1)
+        expandCentroids(c_0, k, clusterPixels(rgbImage, clusters[position_mse]), &centers);
 
         clusters = clusterImage(imageLab, centers);
 
@@ -165,19 +205,21 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
  * @brief Ordering grayscale colors
  * 
  * @param image input image
+ * @param method 1 = order by rgb2gray value of the quantized colors (paper Sec. 3.2.1, Eq. 11)
+ *               2 = order by weighted distance from the basic color (paper Sec. 3.2.2, Algorithm 2)
  */
-void ColorToGrayConverter::ordering(Mat image){
+void ColorToGrayConverter::ordering(Mat image, int method){
 
     vector<vector<pair<Point, Vec3f>>> clusters = this->clusters;
     vector<Vec3f> centers = this->centers;
 
-    float min_distance = numeric_limits<float>::min();
+    float min_distance = -1.0f;
     float distance;
-    int i0, i1, i2, k = centers.size();
+    int i0, i1 = 0, i2 = 0, k = centers.size();
 
     vector<float> grey(k); 
 
-    // select two colors with the biggest distance
+    // select two colors with the biggest distance (needed by method 2 only)
     for (int i = 0; i < k - 1; i++){
         Vec3f color1 = centers[i];
         for (int j = i+1; j < k; j++){
@@ -199,10 +241,11 @@ void ColorToGrayConverter::ordering(Mat image){
 
     Vec3f basic_color = centers[i0];
 
-    // compute distances between basic color and all quantizied colors
+    // method 1 (Eq. 11): sort key is the rgb2gray value of the quantizied color
+    // method 2 (Eq. 13): sort key is the distance between basic color and the quantizied color
     for (int i = 0; i < k; i++){
         Vec3f color = centers[i];
-        distance = weightedEuclidean(color, basic_color);
+        distance = (method == 1) ? rgb2grayOfCenter(color) : weightedEuclidean(color, basic_color);
         storage.push_back(make_pair(i,distance));
     }
 
@@ -216,7 +259,7 @@ void ColorToGrayConverter::ordering(Mat image){
         }
     );
 
-    // assign grey colors to quantizied colors based on distance
+    // assign evenly spaced grey colors to quantizied colors based on the sorted keys (Eq. 11 / Eq. 14)
     for (int m = 1; m <= k; m++){
         int index = storage[m-1].first;
         grey[index] = static_cast<float>(m - 1) / (k - 1);
@@ -240,44 +283,51 @@ void ColorToGrayConverter::ordering(Mat image){
  * @param image input image
  * @param sigma scaling parameter for Laplace Kernel
  */
-void ColorToGrayConverter::createGrayScale(Mat image, float sigma){
+void ColorToGrayConverter::createGrayScale(Mat image, float sigma, bool edgeFix){
     vector<Vec3f> centers = this->centers;
     int k = centers.size();
 
     vector<float> gray = this->grayvalues; 
-    vector<float> a(k); 
+    vector<float> a(k);
 
-    float sum;
-
-    // determine weights between quantizied colors using RBF
-    for (int i = 0; i < k; i++){ 
-        Vec3f color1 = centers[i]; 
-        float greycolor1 = gray[i];
-        sum = 0.0;
+    // determine weights a_j by solving the k x k linear system of Eq. (16):
+    //   g_i = sum_j a_j * phi(x_i, x_j),  i = 1..k   <=>   Phi * a = g
+    Mat Phi(k, k, CV_64F), G(k, 1, CV_64F), A;
+    for (int i = 0; i < k; i++){
+        G.at<double>(i) = gray[i];
         for (int j = 0; j < k; j++){
-                Vec3f color2 = centers[j]; 
-                sum += laplaceKernel(color1, color2, sigma);             
+            Phi.at<double>(i, j) = laplaceKernel(centers[i], centers[j], sigma);
         }
-        a[i] = greycolor1 / sum;
     }
+    if (!solve(Phi, G, A, DECOMP_LU)) solve(Phi, G, A, DECOMP_SVD);
+    for (int i = 0; i < k; i++) a[i] = static_cast<float>(A.at<double>(i));
 
     float f_x;
 
     Mat output = image.clone(), imageLab, grayImage;
 
-    cvtColor(image, imageLab, COLOR_BGR2Lab);
-    imageLab.convertTo(imageLab, CV_32F);
+    imageLab = normalizedLab(image);
 
     cvtColor(image, grayImage, COLOR_BGR2GRAY);
 
-    // assign gray value to each pixel
+    // assign gray value to each pixel (Eq. 16-18)
+    Mat F(image.rows, image.cols, CV_32F);
     for (int x = 0; x < image.rows; x++){
         for (int y = 0; y < image.cols; y++){
             Vec3f img_color = imageLab.at<Vec3f>(x,y);
 
             f_x = getGreyValue(img_color, a, sigma);
 
-            grayImage.at<uchar>(x, y) = static_cast<uchar>(clamp(f_x)*255);
+            F.at<float>(x, y) = clamp(f_x);
+        }
+    }
+
+    // optional extension, NOT part of the paper
+    if (edgeFix) F = repairEdgePixels(image, F);
+
+    for (int x = 0; x < image.rows; x++){
+        for (int y = 0; y < image.cols; y++){
+            grayImage.at<uchar>(x, y) = static_cast<uchar>(F.at<float>(x, y)*255);
         }
     }
     
@@ -311,18 +361,23 @@ Vec3f ColorToGrayConverter::computePrincipalDirection(const Mat& image) {
  * 
  * @param c_0 coordinates of centroid from which two new are computed
  * @param k current number of quantizied colors
- * @param img input image
+ * @param img RGB pixels that belong to c_0, used for the split colour and the PCA direction
  * @param centers centroids (quantizied colors)
  */
 void ColorToGrayConverter::expandCentroids(Vec3f c_0, int &k, Mat img, vector<Vec3f> *centers) {
-    Vec3f sigma(1.0f / 255.0f,1.0f / 255.0f, 1.0f / 255.0f);
+    // delta = 1/255, the minimum increment of an 8-bit value normalised to [0,1] (paper, Eq. 1)
+    const float delta = 1.0f / 255.0f;
 
-    // compute PCA
+    // compute PCA (in RGB, as the split is done in RGB)
     Vec3f D_pca = computePrincipalDirection(img);
 
-    // compute new centroids / colors
-    Vec3f N_c1 = c_0 + sigma * D_pca;
-    Vec3f N_c2 = c_0 - sigma * D_pca;
+    // RGB colour of c_0 = mean RGB colour of its pixels
+    Scalar m = mean(img);
+    Vec3f c_0_rgb(static_cast<float>(m[0]), static_cast<float>(m[1]), static_cast<float>(m[2]));
+
+    // compute new centroids / colors (Eq. 1 in RGB), stored as Lab like all centroids
+    Vec3f N_c1 = labOfBGR(c_0_rgb + delta * D_pca);
+    Vec3f N_c2 = labOfBGR(c_0_rgb - delta * D_pca);
 
     // remove old color
     auto it = find(centers->begin(), centers->end(), c_0);
@@ -386,6 +441,7 @@ vector<vector<pair<Point, Vec3f>>> ColorToGrayConverter::clusterImage(Mat image,
 
 /**
  * @brief Update centers based on current colors of pixels assigned to corresponding cluster
+ *        (new center = mean RGB colour of the cluster, stored as its Lab value)
  * 
  * @param centers centroids of the clusters
  * @param clusters clusters of image
@@ -397,7 +453,7 @@ void ColorToGrayConverter::actualizeCenters(vector<Vec3f> *centers, vector<vecto
     }
 
     for (size_t i = 0; i < clusters.size(); ++i) {
-        Vec3f meanVal(0.0, 0.0, 0.0);
+        Vec3d meanVal(0.0, 0.0, 0.0);
         size_t clusterSize = clusters[i].size();
 
         if (clusterSize == 0) {
@@ -406,10 +462,10 @@ void ColorToGrayConverter::actualizeCenters(vector<Vec3f> *centers, vector<vecto
         }
 
         for (const auto& pixel : clusters[i]) {
-            meanVal += pixel.second;
+            meanVal += Vec3d(rgbImage.at<Vec3f>(pixel.first));
         }
 
-        Vec3f newCenter = meanVal / static_cast<float>(clusterSize);
+        Vec3f newCenter = labOfBGR(Vec3f(meanVal / static_cast<double>(clusterSize)));
 
         (*centers)[i] = newCenter; 
     }
@@ -501,9 +557,10 @@ float ColorToGrayConverter::MSEG_k(Mat image, vector<Vec3f> centers, vector<vect
             Point coords = cluster_pixel.first;
             float color = image.at<float>(coords);
 
-            // compute absolute difference between color in the grayscale image and computed average graycolor in the cluster
-            float diff = abs(color - gQx);
-            mse += diff;
+            // squared difference between color in the grayscale image and computed average graycolor in the cluster
+            // (Eq. 5 prints |.|, but MSEG is a mean SQUARE error and Fig. 7 shows it on the scale of MSE)
+            float diff = color - gQx;
+            mse += diff * diff;
         }
     }
 
@@ -537,7 +594,7 @@ float ColorToGrayConverter::Entropy(Mat img){
 
     float E = 0;
     for (size_t i = 0; i < p.size(); i++){
-        E += p[i]*log(p[i]);
+        if (p[i] > 0) E += p[i]*log2(p[i]); // bits (max 8 for 8-bit image), 0*log(0) is taken as 0
     }
     
     return -E;
@@ -568,6 +625,20 @@ float ColorToGrayConverter::M_k(float MSE_k, float MSEG_k) {
 /************ PART 2 - HELPER FUNCTIONS ************/
 
 /**
+ * @brief rgb2gray value of a quantizied color (Eq. 11), in [0,1]
+ * 
+ * @param labColor quantizied color as stored in centers (normalised Lab: L/100, (a+128)/255, (b+128)/255)
+ * @return float gray value
+ */
+float ColorToGrayConverter::rgb2grayOfCenter(const Vec3f& labColor){
+    // convert back to RGB through true Lab values (L in [0,100], a and b centered on 0)
+    Mat lab(1, 1, CV_32FC3, Scalar(labColor[0] * 100.0f, labColor[1] * 255.0f - 128.0f, labColor[2] * 255.0f - 128.0f)), bgr;
+    cvtColor(lab, bgr, COLOR_Lab2BGR);
+    Vec3f c = bgr.at<Vec3f>(0, 0);
+    return 0.2989f * c[2] + 0.5870f * c[1] + 0.1140f * c[0]; // weights of the paper
+}
+
+/**
  * @brief Compute weighted Euclidean Distance
  * 
  * @param color1 color value 
@@ -584,6 +655,173 @@ float ColorToGrayConverter::weightedEuclidean(const Vec3f& color1, const Vec3f& 
 /************ PART 3 - HELPER FUNCTIONS ************/
 
 /**
+ * @brief EXTENSION, NOT PART OF THE PAPER: repair the gray value of blended (anti-aliased) edge pixels.
+ *
+ * The method maps colours to gray values without looking at the position of a pixel. A pixel on the
+ * border of two regions often has a blended colour c_p = (1-t)*c_A + t*c_B of the colours on both sides,
+ * and such a colour can be mapped to a gray value outside the range of the two sides, which shows up
+ * as thin dark or white lines along region borders.
+ *
+ * For every pixel, pairs of pixels on opposite sides (distance 1 and 2, horizontal, vertical and both
+ * diagonals) are tested. If the pixel's RGB colour lies on the segment between the two colours
+ * (residual <= 0.04, 0 <= t <= 1) and the two colours really differ (distance >= 0.1), the pair with
+ * the largest colour difference is used. If the pixel's gray value lies outside the gray range of that
+ * pair (by more than 4/255), or differs from the same blend of the two gray values, (1-t)*g_A + t*g_B,
+ * by more than 8/255, it is replaced by that blend. Pixels with 4 or more neighbours of nearly the same
+ * colour (difference < 0.02) belong to a flat region and are skipped: a region colour can happen to lie
+ * between two other colours, which would otherwise be mistaken for a blend where several regions meet.
+ * All other pixels are left unchanged. (Correcting
+ * only out-of-range pixels left the in-range ones of the same border unchanged, which gave stair-stepped
+ * borders.)
+ *
+ * @param image input image (BGR, 8-bit)
+ * @param F gray values in [0,1] from Eq. (18)
+ * @return Mat repaired gray values in [0,1]
+ */
+Mat ColorToGrayConverter::repairEdgePixels(const Mat &image, const Mat &F){
+    const float maxResidual = 0.04f, minEdge = 0.1f, eps = 4.0f / 255.0f, maxBlendError = 8.0f / 255.0f;
+    const float sameColour = 0.01f, newRegionColour = 0.02f;
+    const int dirs[4][2] = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
+    const int R = image.rows, C = image.cols;
+    auto inside = [&](int x, int y){ return x >= 0 && y >= 0 && x < R && y < C; };
+
+    Mat rgb;
+    image.convertTo(rgb, CV_32F, 1/255.0);
+    Mat out = F.clone();
+    int changed = 0;
+
+    // flat = pixel with 4 or more near-identical neighbours (inside a region, not on a thin blended border)
+    Mat flat = Mat::zeros(R, C, CV_8U);
+    for (int x = 0; x < R; x++){
+        for (int y = 0; y < C; y++){
+            Vec3f c = rgb.at<Vec3f>(x, y);
+            int same = 0;
+            for (int dx = -1; dx <= 1; dx++){
+                for (int dy = -1; dy <= 1; dy++){
+                    if ((dx == 0 && dy == 0) || !inside(x + dx, y + dy)) continue;
+                    Vec3f dn = rgb.at<Vec3f>(x + dx, y + dy) - c;
+                    if (dn.dot(dn) < sameColour * sameColour) same++;
+                }
+            }
+            if (same >= 4) flat.at<uchar>(x, y) = 1;
+        }
+    }
+    // member = flat, or the same colour as a flat neighbour. The gray is a function of the colour,
+    // so such a pixel already has the gray of its region and must not be changed.
+    Mat member = flat.clone();
+    for (int x = 0; x < R; x++){
+        for (int y = 0; y < C; y++){
+            if (member.at<uchar>(x, y)) continue;
+            Vec3f c = rgb.at<Vec3f>(x, y);
+            for (int dx = -1; dx <= 1; dx++){
+                for (int dy = -1; dy <= 1; dy++){
+                    if (!inside(x + dx, y + dy) || !flat.at<uchar>(x + dx, y + dy)) continue;
+                    Vec3f dn = rgb.at<Vec3f>(x + dx, y + dy) - c;
+                    if (dn.dot(dn) < sameColour * sameColour) member.at<uchar>(x, y) = 1;
+                }
+            }
+        }
+    }
+
+    // ---- 1) thin border between two regions: blend of the two colours on opposite sides ----
+    for (int x = 0; x < R; x++){
+        for (int y = 0; y < C; y++){
+            if (member.at<uchar>(x, y)) continue;
+            Vec3f c = rgb.at<Vec3f>(x, y);
+            float bestEdge = -1.0f, bestT = 0.0f, gA = 0.0f, gB = 0.0f;
+
+            for (const auto &d : dirs){
+                for (int s = 1; s <= 2; s++){
+                    int xa = x - s * d[0], ya = y - s * d[1], xb = x + s * d[0], yb = y + s * d[1];
+                    if (!inside(xa, ya) || !inside(xb, yb)) continue;
+
+                    Vec3f cA = rgb.at<Vec3f>(xa, ya), cB = rgb.at<Vec3f>(xb, yb), v = cB - cA;
+                    float len2 = v.dot(v);
+                    if (len2 < minEdge * minEdge) continue;              // no real edge between A and B
+
+                    float t = (c - cA).dot(v) / len2;
+                    if (t < 0.0f || t > 1.0f) continue;                  // not between the two colours
+                    Vec3f r = c - (cA + t * v);
+                    if (r.dot(r) > maxResidual * maxResidual) continue;  // not a blend of the two colours
+
+                    if (len2 > bestEdge){
+                        bestEdge = len2; bestT = t;
+                        gA = F.at<float>(xa, ya); gB = F.at<float>(xb, yb);
+                    }
+                }
+            }
+
+            if (bestEdge < 0.0f) continue;
+            float g = F.at<float>(x, y);
+            float blend = (1.0f - bestT) * gA + bestT * gB;
+            if (g < min(gA, gB) - eps || g > max(gA, gB) + eps || fabs(g - blend) > maxBlendError){
+                out.at<float>(x, y) = blend;
+                changed++;
+            }
+        }
+    }
+
+    // ---- 2) junctions: where 3 or more regions meet, a pixel blends up to 3 colours. Fit its colour as a
+    // convex combination of 1-3 colours of the flat regions within radius 2 and use the same weights on
+    // their grays. Only these region grays are used, so a wrong border pixel cannot spread.
+    int junction = 0;
+    for (int x = 0; x < R; x++){
+        for (int y = 0; y < C; y++){
+            if (member.at<uchar>(x, y)) continue;
+            vector<Vec3f> col; vector<float> gr;
+            for (int dx = -2; dx <= 2; dx++){
+                for (int dy = -2; dy <= 2; dy++){
+                    if (!inside(x + dx, y + dy) || !flat.at<uchar>(x + dx, y + dy)) continue;
+                    Vec3f cn = rgb.at<Vec3f>(x + dx, y + dy);
+                    bool known = false;
+                    for (const auto &k : col){ Vec3f dn = cn - k; if (dn.dot(dn) < newRegionColour * newRegionColour) known = true; }
+                    if (!known){ col.push_back(cn); gr.push_back(F.at<float>(x + dx, y + dy)); }
+                }
+            }
+            if (col.empty()) continue;
+
+            Vec3f c = rgb.at<Vec3f>(x, y);
+            const int n = col.size();
+            float bestRes = 1e9f, pred = 0.0f;
+            auto take = [&](float res, float p){ if (res < bestRes - 1e-4f){ bestRes = res; pred = p; } };
+            for (int i = 0; i < n; i++)                                   // one region colour
+                take(norm(c - col[i]), gr[i]);
+            for (int i = 0; i < n; i++){                                  // blend of two
+                for (int j = i + 1; j < n; j++){
+                    Vec3f v = col[j] - col[i]; float l = v.dot(v);
+                    if (l < 1e-8f) continue;
+                    float t = (c - col[i]).dot(v) / l;
+                    if (t < 0.0f || t > 1.0f) continue;
+                    take(norm(c - col[i] - t * v), (1.0f - t) * gr[i] + t * gr[j]);
+                }
+            }
+            for (int i = 0; i < n; i++){                                  // blend of three
+                for (int j = i + 1; j < n; j++){
+                    for (int k = j + 1; k < n; k++){
+                        Vec3f u = col[j] - col[i], v = col[k] - col[i], q = c - col[i];
+                        float uu = u.dot(u), uv = u.dot(v), vv = v.dot(v), det = uu * vv - uv * uv;
+                        if (fabs(det) < 1e-10f) continue;
+                        float a = (vv * u.dot(q) - uv * v.dot(q)) / det, b = (uu * v.dot(q) - uv * u.dot(q)) / det;
+                        if (a < 0.0f || b < 0.0f || a + b > 1.0f) continue;
+                        take(norm(q - a * u - b * v), (1.0f - a - b) * gr[i] + a * gr[j] + b * gr[k]);
+                    }
+                }
+            }
+            if (bestRes > maxResidual) continue;                          // colour is not a blend of the regions
+            if (fabs(out.at<float>(x, y) - pred) > maxBlendError){
+                if (out.at<float>(x, y) == F.at<float>(x, y)) changed++;
+                out.at<float>(x, y) = pred;
+                junction++;
+            }
+        }
+    }
+
+    cerr << "edge repair (extension): " << changed << " pixels changed ("
+         << 100.0 * changed / image.total() << " %), " << junction << " of them at junctions" << endl;
+    return out;
+}
+
+/**
  * @brief RBF function - Gaussian
  * 
  * @param color1 color value
@@ -593,7 +831,7 @@ float ColorToGrayConverter::weightedEuclidean(const Vec3f& color1, const Vec3f& 
  */
 float ColorToGrayConverter::gaussianKernel(const Vec3f& color1, const Vec3f& color2, float sigma){
     float euclid = euclideanDistance(color1, color2);
-    return exp(- euclid / (2*sigma*sigma));
+    return exp(- euclid * euclid / (2*sigma*sigma)); // Eq. (15) is printed without the square
 }
 
 /**
@@ -656,7 +894,8 @@ Mat ColorToGrayConverter::convertToGrayQuantizedImage(const Mat& originalImage, 
     Mat quantizedImage = originalImage.clone();
     for (size_t clusterIndex = 0; clusterIndex < clusters.size(); ++clusterIndex) {
         for (const auto& pixel : clusters[clusterIndex]) {
-            quantizedImage.at<Vec3b>(pixel.first) = centroids[clusterIndex] * 255;
+            uchar v = saturate_cast<uchar>(centroids[clusterIndex] * 255);
+            quantizedImage.at<Vec3b>(pixel.first) = Vec3b(v, v, v);
         }
     }
 
@@ -674,10 +913,11 @@ Mat ColorToGrayConverter::convertToGrayQuantizedImage(const Mat& originalImage, 
 Mat ColorToGrayConverter::convertToQuantizedImage(const Mat& originalImage, const vector<Vec3f>& centroids, const vector<vector<pair<Point, Vec3f>>>& clusters) {
     Mat quantizedImage = originalImage.clone();
     for (size_t clusterIndex = 0; clusterIndex < clusters.size(); ++clusterIndex) {
+        // normalised Lab -> OpenCV 8-bit Lab encoding (converted to BGR by the caller)
         Vec3b centroidColor = Vec3b(
-            static_cast<uchar>(centroids[clusterIndex][0]),
-            static_cast<uchar>(centroids[clusterIndex][1]),
-            static_cast<uchar>(centroids[clusterIndex][2])
+            saturate_cast<uchar>(centroids[clusterIndex][0] * 255.0f),
+            saturate_cast<uchar>(centroids[clusterIndex][1] * 255.0f),
+            saturate_cast<uchar>(centroids[clusterIndex][2] * 255.0f)
         );
 
         for (const auto& pixel : clusters[clusterIndex]) {
@@ -697,9 +937,11 @@ Mat ColorToGrayConverter::convertToQuantizedImage(const Mat& originalImage, cons
  */
 int main(int argc, char* argv[]) {
     
-    if (argc != 4) {
-        cerr << "Usage: " << argv[0] << " <image_path> <max_k> <sensitivity>\n";
+    if (argc < 4 || argc > 6) {
+        cerr << "Usage: " << argv[0] << " <image_path> <max_k> <sensitivity> [<ordering>] [<edge_repair>]\n";
         cerr << "Please provide an image path, max number of clusters (max_k), and sensitivity.\n";
+        cerr << "Optional ordering: 1 = rgb2gray ordering (Eq. 11), 2 = distance ordering (Algorithm 2, default).\n";
+        cerr << "Optional edge_repair: 1 = repair blended edge pixels (extension, not in the paper), 0 = off (default).\n";
         return 1;
     }
 
@@ -719,12 +961,12 @@ int main(int argc, char* argv[]) {
 
     int k = 1;
     int max_k = atoi(argv[2]);
-    float theta_0 = 0.0004;  
-    float theta_1 = 0.5; 
+    float theta_0 = 0.0004;  // paper value (values normalised to [0,1])
+    float theta_1 = 0.00065; // paper value (values normalised to [0,1])
     
     converter.quantizeColors(image, k, max_k, theta_0, theta_1);
-    converter.ordering(image);
-    converter.createGrayScale(image, sigma);
+    converter.ordering(image, (argc >= 5) ? atoi(argv[4]) : 2);
+    converter.createGrayScale(image, sigma, (argc == 6) && atoi(argv[5]) == 1);
     
     return 0;
 }

@@ -2,7 +2,7 @@
 CXX = g++
 
 # Define any compile-time flags
-CXXFLAGS = -Wall -std=c++11 $(shell pkg-config --cflags opencv4)
+CXXFLAGS = -O2 -Wall -std=c++11 $(shell pkg-config --cflags opencv4)
 
 # Define any libraries to link into executable
 LDFLAGS = $(shell pkg-config --libs opencv4)
