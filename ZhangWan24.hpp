@@ -50,6 +50,7 @@ private:
     std::vector<cv::Vec3f> centers; 
     std::vector<std::vector<std::pair<cv::Point, cv::Vec3f>>> clusters;
     std::vector<float> grayvalues;
+    cv::Mat rgbImage;   // input image as BGR float in [0,1], used for the RGB centroids
 };
 
 #endif

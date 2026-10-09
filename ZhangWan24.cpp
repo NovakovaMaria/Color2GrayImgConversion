@@ -20,10 +20,19 @@ static Mat normalizedLab(const Mat &bgr8) {
     return lab.reshape(3, bgr8.rows);
 }
 
-// pixels (Lab values) of one cluster as an N x 1 three-channel matrix, used for the PCA of that cluster
-static Mat clusterPixels(const vector<pair<Point, Vec3f>> &cluster) {
+// normalised Lab (see normalizedLab) of one colour given as BGR in [0,1]
+static Vec3f labOfBGR(const Vec3f &bgr) {
+    Mat px(1, 1, CV_32FC3, Scalar(bgr[0], bgr[1], bgr[2])), lab;
+    cvtColor(px, lab, COLOR_BGR2Lab);
+    Vec3f t = lab.at<Vec3f>(0, 0);
+    return Vec3f(t[0] / 100.0f, (t[1] + 128.0f) / 255.0f, (t[2] + 128.0f) / 255.0f);
+}
+
+// RGB values (BGR order, [0,1]) of the pixels of one cluster as an N x 1 three-channel matrix,
+// used for the split of Eq. (1), which is done in RGB (paper, Fig. 4 and Fig. 5)
+static Mat clusterPixels(const Mat &rgbImage, const vector<pair<Point, Vec3f>> &cluster) {
     Mat data(static_cast<int>(cluster.size()), 1, CV_32FC3);
-    for (size_t i = 0; i < cluster.size(); i++) data.at<Vec3f>(static_cast<int>(i)) = cluster[i].second;
+    for (size_t i = 0; i < cluster.size(); i++) data.at<Vec3f>(static_cast<int>(i)) = rgbImage.at<Vec3f>(cluster[i].first);
     return data;
 }
 
@@ -50,17 +59,21 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
     // image to CIE colors space, normalised to [0,1]
     imageLab = normalizedLab(image);
 
+    // colours are quantised in RGB with the perceptual distance in CIELab (paper, Fig. 4b and 5b "our method"):
+    // centroids are mean RGB colours, stored as their Lab values so that all distances are CIELab distances (Eq. 2)
+    this->rgbImage = imagefloat;
+
     // determine type of the image (synthetic vs natural)
     float E = Entropy(grayImage8);
     bool classif = classification(E);
 
     // determine first centroid color, it is mean of all values in the image
-    Scalar meanScalar = mean(imageLab);
+    Scalar meanScalar = mean(imagefloat);
     float mse_k_prev, m_k_prev;
 
-    Vec3f c_0(static_cast<float>(meanScalar[0]), 
+    Vec3f c_0 = labOfBGR(Vec3f(static_cast<float>(meanScalar[0]), 
                     static_cast<float>(meanScalar[1]), 
-                    static_cast<float>(meanScalar[2]));
+                    static_cast<float>(meanScalar[2])));
 
     vector<Vec3f> centers;
     centers.push_back(c_0);
@@ -105,7 +118,7 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
     // (take the stored centre: after the updates above it is no longer bit-identical to c_0,
     //  and expandCentroids() finds the centre to replace by exact comparison)
     c_0 = centers[0];
-    expandCentroids(c_0, k, clusterPixels(clusters[0]), &centers);
+    expandCentroids(c_0, k, clusterPixels(rgbImage, clusters[0]), &centers);
 
     // iterate till maximum number condition is not met
     while (k <= max_k) {
@@ -158,7 +171,7 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
         c_0 = centers[position_mse];
 
         // principal direction of the pixels that belong to c_0 (paper, Sec. 3.1)
-        expandCentroids(c_0, k, clusterPixels(clusters[position_mse]), &centers);
+        expandCentroids(c_0, k, clusterPixels(rgbImage, clusters[position_mse]), &centers);
 
         clusters = clusterImage(imageLab, centers);
 
@@ -338,19 +351,23 @@ Vec3f ColorToGrayConverter::computePrincipalDirection(const Mat& image) {
  * 
  * @param c_0 coordinates of centroid from which two new are computed
  * @param k current number of quantizied colors
- * @param img pixels (Lab) that belong to c_0, used for the PCA direction
+ * @param img RGB pixels that belong to c_0, used for the split colour and the PCA direction
  * @param centers centroids (quantizied colors)
  */
 void ColorToGrayConverter::expandCentroids(Vec3f c_0, int &k, Mat img, vector<Vec3f> *centers) {
     // delta = 1/255, the minimum increment of an 8-bit value normalised to [0,1] (paper, Eq. 1)
     const float delta = 1.0f / 255.0f;
 
-    // compute PCA
+    // compute PCA (in RGB, as the split is done in RGB)
     Vec3f D_pca = computePrincipalDirection(img);
 
-    // compute new centroids / colors
-    Vec3f N_c1 = c_0 + delta * D_pca;
-    Vec3f N_c2 = c_0 - delta * D_pca;
+    // RGB colour of c_0 = mean RGB colour of its pixels
+    Scalar m = mean(img);
+    Vec3f c_0_rgb(static_cast<float>(m[0]), static_cast<float>(m[1]), static_cast<float>(m[2]));
+
+    // compute new centroids / colors (Eq. 1 in RGB), stored as Lab like all centroids
+    Vec3f N_c1 = labOfBGR(c_0_rgb + delta * D_pca);
+    Vec3f N_c2 = labOfBGR(c_0_rgb - delta * D_pca);
 
     // remove old color
     auto it = find(centers->begin(), centers->end(), c_0);
@@ -414,6 +431,7 @@ vector<vector<pair<Point, Vec3f>>> ColorToGrayConverter::clusterImage(Mat image,
 
 /**
  * @brief Update centers based on current colors of pixels assigned to corresponding cluster
+ *        (new center = mean RGB colour of the cluster, stored as its Lab value)
  * 
  * @param centers centroids of the clusters
  * @param clusters clusters of image
@@ -425,7 +443,7 @@ void ColorToGrayConverter::actualizeCenters(vector<Vec3f> *centers, vector<vecto
     }
 
     for (size_t i = 0; i < clusters.size(); ++i) {
-        Vec3f meanVal(0.0, 0.0, 0.0);
+        Vec3d meanVal(0.0, 0.0, 0.0);
         size_t clusterSize = clusters[i].size();
 
         if (clusterSize == 0) {
@@ -434,10 +452,10 @@ void ColorToGrayConverter::actualizeCenters(vector<Vec3f> *centers, vector<vecto
         }
 
         for (const auto& pixel : clusters[i]) {
-            meanVal += pixel.second;
+            meanVal += Vec3d(rgbImage.at<Vec3f>(pixel.first));
         }
 
-        Vec3f newCenter = meanVal / static_cast<float>(clusterSize);
+        Vec3f newCenter = labOfBGR(Vec3f(meanVal / static_cast<double>(clusterSize)));
 
         (*centers)[i] = newCenter; 
     }
