@@ -96,8 +96,6 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
         // STEP 3
         actualizeCenters(&centers, clusters);
 
-        MSE(centers, clusters, &individualMSE);
-
         // STEP 4
         prevMSE_k = numeric_limits<float>::max();
         do {
@@ -124,7 +122,12 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
         m_k = M_k(mse_k, mseg_k);
 
         // select centroid for new expansion, it is the one with biggest MSE
-        float minMSE = numeric_limits<float>::min();
+        // (MSE of the converged clusters of this iteration only)
+        individualMSE.clear();
+        MSE(centers, clusters, &individualMSE);
+
+        float minMSE = -1.0f;
+        position_mse = 0;
 
         for (size_t i = 0; i < individualMSE.size(); i++){
             if (minMSE < individualMSE[i]){
