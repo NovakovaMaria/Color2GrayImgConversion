@@ -670,7 +670,8 @@ Mat ColorToGrayConverter::convertToGrayQuantizedImage(const Mat& originalImage, 
     Mat quantizedImage = originalImage.clone();
     for (size_t clusterIndex = 0; clusterIndex < clusters.size(); ++clusterIndex) {
         for (const auto& pixel : clusters[clusterIndex]) {
-            quantizedImage.at<Vec3b>(pixel.first) = centroids[clusterIndex] * 255;
+            uchar v = saturate_cast<uchar>(centroids[clusterIndex] * 255);
+            quantizedImage.at<Vec3b>(pixel.first) = Vec3b(v, v, v);
         }
     }
 
