@@ -34,7 +34,7 @@ make
 
 - ```input_image``` is color image input for conversion,
 - ```max_k``` is maximum number of quantized colors (clusters),
-- ```sigma``` controls the spread of the Laplace kernel's influence.
+- ```sigma``` controls the spread of the Laplace kernel's influence. All colour values are normalised to [0,1] as in the paper, so sigma is on that scale too (e.g. 0.1; the paper gives no value).
 - ```ordering``` (optional) selects how gray values are assigned to the quantized colors: 1 = by rgb2gray value (paper Sec. 3.2.1), 2 = by weighted Lab distance (paper Sec. 3.2.2, default).
 
 ## Examples Of The Conversion

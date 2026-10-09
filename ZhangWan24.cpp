@@ -7,6 +7,19 @@
 
 #include "ZhangWan24.hpp"
 
+// CIELab of a BGR image, normalised to [0,1] like the paper normalises all values to [0,1]:
+// L/100, (a+128)/255, (b+128)/255 (this is OpenCV's 8-bit Lab encoding divided by 255)
+static Mat normalizedLab(const Mat &bgr8) {
+    Mat bgr, lab;
+    bgr8.convertTo(bgr, CV_32F, 1/255.0);
+    cvtColor(bgr, lab, COLOR_BGR2Lab);                       // L in [0,100], a and b around [-128,127]
+    lab = lab.reshape(1, static_cast<int>(lab.total()));
+    lab.col(0) *= 1/100.0;
+    lab.col(1) = (lab.col(1) + 128.0) / 255.0;
+    lab.col(2) = (lab.col(2) + 128.0) / 255.0;
+    return lab.reshape(3, bgr8.rows);
+}
+
 // pixels (Lab values) of one cluster as an N x 1 three-channel matrix, used for the PCA of that cluster
 static Mat clusterPixels(const vector<pair<Point, Vec3f>> &cluster) {
     Mat data(static_cast<int>(cluster.size()), 1, CV_32FC3);
@@ -34,9 +47,8 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
     cvtColor(imagefloat, grayImage, COLOR_BGR2GRAY);
     cvtColor(image, grayImage8, COLOR_BGR2GRAY); // 8-bit gray for the entropy histogram
 
-    // image to CIE colors space
-    cvtColor(image, imageLab, COLOR_BGR2Lab);
-    imageLab.convertTo(imageLab, CV_32F);
+    // image to CIE colors space, normalised to [0,1]
+    imageLab = normalizedLab(image);
 
     // determine type of the image (synthetic vs natural)
     float E = Entropy(grayImage8);
@@ -281,8 +293,7 @@ void ColorToGrayConverter::createGrayScale(Mat image, float sigma){
 
     Mat output = image.clone(), imageLab, grayImage;
 
-    cvtColor(image, imageLab, COLOR_BGR2Lab);
-    imageLab.convertTo(imageLab, CV_32F);
+    imageLab = normalizedLab(image);
 
     cvtColor(image, grayImage, COLOR_BGR2GRAY);
 
@@ -331,8 +342,8 @@ Vec3f ColorToGrayConverter::computePrincipalDirection(const Mat& image) {
  * @param centers centroids (quantizied colors)
  */
 void ColorToGrayConverter::expandCentroids(Vec3f c_0, int &k, Mat img, vector<Vec3f> *centers) {
-    // delta = 1/255 on a [0,1] scale (paper, Eq. 1); the Lab values here are on a 0-255 scale, so delta = 1
-    const float delta = 1.0f;
+    // delta = 1/255, the minimum increment of an 8-bit value normalised to [0,1] (paper, Eq. 1)
+    const float delta = 1.0f / 255.0f;
 
     // compute PCA
     Vec3f D_pca = computePrincipalDirection(img);
@@ -587,12 +598,12 @@ float ColorToGrayConverter::M_k(float MSE_k, float MSEG_k) {
 /**
  * @brief rgb2gray value of a quantizied color (Eq. 11), in [0,1]
  * 
- * @param labColor quantizied color as stored in centers (OpenCV 8-bit Lab encoding: L*255/100, a+128, b+128)
+ * @param labColor quantizied color as stored in centers (normalised Lab: L/100, (a+128)/255, (b+128)/255)
  * @return float gray value
  */
 float ColorToGrayConverter::rgb2grayOfCenter(const Vec3f& labColor){
     // convert back to RGB through true Lab values (L in [0,100], a and b centered on 0)
-    Mat lab(1, 1, CV_32FC3, Scalar(labColor[0] * 100.0f / 255.0f, labColor[1] - 128.0f, labColor[2] - 128.0f)), bgr;
+    Mat lab(1, 1, CV_32FC3, Scalar(labColor[0] * 100.0f, labColor[1] * 255.0f - 128.0f, labColor[2] * 255.0f - 128.0f)), bgr;
     cvtColor(lab, bgr, COLOR_Lab2BGR);
     Vec3f c = bgr.at<Vec3f>(0, 0);
     return 0.2989f * c[2] + 0.5870f * c[1] + 0.1140f * c[0]; // weights of the paper
@@ -706,10 +717,11 @@ Mat ColorToGrayConverter::convertToGrayQuantizedImage(const Mat& originalImage, 
 Mat ColorToGrayConverter::convertToQuantizedImage(const Mat& originalImage, const vector<Vec3f>& centroids, const vector<vector<pair<Point, Vec3f>>>& clusters) {
     Mat quantizedImage = originalImage.clone();
     for (size_t clusterIndex = 0; clusterIndex < clusters.size(); ++clusterIndex) {
+        // normalised Lab -> OpenCV 8-bit Lab encoding (converted to BGR by the caller)
         Vec3b centroidColor = Vec3b(
-            static_cast<uchar>(centroids[clusterIndex][0]),
-            static_cast<uchar>(centroids[clusterIndex][1]),
-            static_cast<uchar>(centroids[clusterIndex][2])
+            saturate_cast<uchar>(centroids[clusterIndex][0] * 255.0f),
+            saturate_cast<uchar>(centroids[clusterIndex][1] * 255.0f),
+            saturate_cast<uchar>(centroids[clusterIndex][2] * 255.0f)
         );
 
         for (const auto& pixel : clusters[clusterIndex]) {
@@ -752,8 +764,8 @@ int main(int argc, char* argv[]) {
 
     int k = 1;
     int max_k = atoi(argv[2]);
-    float theta_0 = 0.0004;  
-    float theta_1 = 0.5; 
+    float theta_0 = 0.0004;  // paper value (values normalised to [0,1])
+    float theta_1 = 0.00065; // paper value (values normalised to [0,1])
     
     converter.quantizeColors(image, k, max_k, theta_0, theta_1);
     converter.ordering(image, (argc == 5) ? atoi(argv[4]) : 2);
