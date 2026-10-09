@@ -20,18 +20,19 @@
  */
 void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float theta_0, float theta_1) {
     
-    cv::Mat imagefloat, imageLab, grayImage, output1;
+    cv::Mat imagefloat, imageLab, grayImage, grayImage8, output1;
 
     // image to grayscale
     image.convertTo(imagefloat, CV_32F, 1/255.0);
     cvtColor(imagefloat, grayImage, COLOR_BGR2GRAY);
-    
+    cvtColor(image, grayImage8, COLOR_BGR2GRAY); // 8-bit gray for the entropy histogram
+
     // image to CIE colors space
     cvtColor(image, imageLab, COLOR_BGR2Lab);
     imageLab.convertTo(imageLab, CV_32F);
 
     // determine type of the image (synthetic vs natural)
-    float E = Entropy(grayImage);
+    float E = Entropy(grayImage8);
     bool classif = classification(E);
 
     // determine first centroid color, it is mean of all values in the image
@@ -537,7 +538,7 @@ float ColorToGrayConverter::Entropy(Mat img){
 
     float E = 0;
     for (size_t i = 0; i < p.size(); i++){
-        E += p[i]*log(p[i]);
+        if (p[i] > 0) E += p[i]*log2(p[i]); // bits (max 8 for 8-bit image), 0*log(0) is taken as 0
     }
     
     return -E;
