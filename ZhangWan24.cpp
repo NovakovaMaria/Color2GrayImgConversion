@@ -186,9 +186,9 @@ void ColorToGrayConverter::ordering(Mat image){
     vector<vector<pair<Point, Vec3f>>> clusters = this->clusters;
     vector<Vec3f> centers = this->centers;
 
-    float min_distance = numeric_limits<float>::min();
+    float min_distance = -1.0f;
     float distance;
-    int i0, i1, i2, k = centers.size();
+    int i0, i1 = 0, i2 = 0, k = centers.size();
 
     vector<float> grey(k); 
 
