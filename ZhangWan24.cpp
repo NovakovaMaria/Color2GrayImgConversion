@@ -665,33 +665,75 @@ float ColorToGrayConverter::weightedEuclidean(const Vec3f& color1, const Vec3f& 
  * For every pixel, pairs of pixels on opposite sides (distance 1 and 2, horizontal, vertical and both
  * diagonals) are tested. If the pixel's RGB colour lies on the segment between the two colours
  * (residual <= 0.04, 0 <= t <= 1) and the two colours really differ (distance >= 0.1), the pair with
- * the largest colour difference is used. Only if the pixel's gray value lies outside the gray range of
- * that pair (by more than 4/255) it is replaced by the same blend of the two gray values,
- * (1-t)*g_A + t*g_B. All other pixels are left unchanged.
+ * the largest colour difference is used. If the pixel's gray value lies outside the gray range of that
+ * pair (by more than 4/255), or differs from the same blend of the two gray values, (1-t)*g_A + t*g_B,
+ * by more than 8/255, it is replaced by that blend. Pixels with 4 or more neighbours of nearly the same
+ * colour (difference < 0.02) belong to a flat region and are skipped: a region colour can happen to lie
+ * between two other colours, which would otherwise be mistaken for a blend where several regions meet.
+ * All other pixels are left unchanged. (Correcting
+ * only out-of-range pixels left the in-range ones of the same border unchanged, which gave stair-stepped
+ * borders.)
  *
  * @param image input image (BGR, 8-bit)
  * @param F gray values in [0,1] from Eq. (18)
  * @return Mat repaired gray values in [0,1]
  */
 Mat ColorToGrayConverter::repairEdgePixels(const Mat &image, const Mat &F){
-    const float maxResidual = 0.04f, minEdge = 0.1f, eps = 4.0f / 255.0f;
+    const float maxResidual = 0.04f, minEdge = 0.1f, eps = 4.0f / 255.0f, maxBlendError = 8.0f / 255.0f;
+    const float sameColour = 0.01f, newRegionColour = 0.02f;
     const int dirs[4][2] = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
+    const int R = image.rows, C = image.cols;
+    auto inside = [&](int x, int y){ return x >= 0 && y >= 0 && x < R && y < C; };
 
     Mat rgb;
     image.convertTo(rgb, CV_32F, 1/255.0);
     Mat out = F.clone();
     int changed = 0;
 
-    for (int x = 0; x < image.rows; x++){
-        for (int y = 0; y < image.cols; y++){
+    // flat = pixel with 4 or more near-identical neighbours (inside a region, not on a thin blended border)
+    Mat flat = Mat::zeros(R, C, CV_8U);
+    for (int x = 0; x < R; x++){
+        for (int y = 0; y < C; y++){
+            Vec3f c = rgb.at<Vec3f>(x, y);
+            int same = 0;
+            for (int dx = -1; dx <= 1; dx++){
+                for (int dy = -1; dy <= 1; dy++){
+                    if ((dx == 0 && dy == 0) || !inside(x + dx, y + dy)) continue;
+                    Vec3f dn = rgb.at<Vec3f>(x + dx, y + dy) - c;
+                    if (dn.dot(dn) < sameColour * sameColour) same++;
+                }
+            }
+            if (same >= 4) flat.at<uchar>(x, y) = 1;
+        }
+    }
+    // member = flat, or the same colour as a flat neighbour. The gray is a function of the colour,
+    // so such a pixel already has the gray of its region and must not be changed.
+    Mat member = flat.clone();
+    for (int x = 0; x < R; x++){
+        for (int y = 0; y < C; y++){
+            if (member.at<uchar>(x, y)) continue;
+            Vec3f c = rgb.at<Vec3f>(x, y);
+            for (int dx = -1; dx <= 1; dx++){
+                for (int dy = -1; dy <= 1; dy++){
+                    if (!inside(x + dx, y + dy) || !flat.at<uchar>(x + dx, y + dy)) continue;
+                    Vec3f dn = rgb.at<Vec3f>(x + dx, y + dy) - c;
+                    if (dn.dot(dn) < sameColour * sameColour) member.at<uchar>(x, y) = 1;
+                }
+            }
+        }
+    }
+
+    // ---- 1) thin border between two regions: blend of the two colours on opposite sides ----
+    for (int x = 0; x < R; x++){
+        for (int y = 0; y < C; y++){
+            if (member.at<uchar>(x, y)) continue;
             Vec3f c = rgb.at<Vec3f>(x, y);
             float bestEdge = -1.0f, bestT = 0.0f, gA = 0.0f, gB = 0.0f;
 
             for (const auto &d : dirs){
                 for (int s = 1; s <= 2; s++){
                     int xa = x - s * d[0], ya = y - s * d[1], xb = x + s * d[0], yb = y + s * d[1];
-                    if (xa < 0 || xb < 0 || xa >= image.rows || xb >= image.rows ||
-                        ya < 0 || yb < 0 || ya >= image.cols || yb >= image.cols) continue;
+                    if (!inside(xa, ya) || !inside(xb, yb)) continue;
 
                     Vec3f cA = rgb.at<Vec3f>(xa, ya), cB = rgb.at<Vec3f>(xb, yb), v = cB - cA;
                     float len2 = v.dot(v);
@@ -711,15 +753,71 @@ Mat ColorToGrayConverter::repairEdgePixels(const Mat &image, const Mat &F){
 
             if (bestEdge < 0.0f) continue;
             float g = F.at<float>(x, y);
-            if (g < min(gA, gB) - eps || g > max(gA, gB) + eps){
-                out.at<float>(x, y) = (1.0f - bestT) * gA + bestT * gB;
+            float blend = (1.0f - bestT) * gA + bestT * gB;
+            if (g < min(gA, gB) - eps || g > max(gA, gB) + eps || fabs(g - blend) > maxBlendError){
+                out.at<float>(x, y) = blend;
                 changed++;
             }
         }
     }
 
+    // ---- 2) junctions: where 3 or more regions meet, a pixel blends up to 3 colours. Fit its colour as a
+    // convex combination of 1-3 colours of the flat regions within radius 2 and use the same weights on
+    // their grays. Only these region grays are used, so a wrong border pixel cannot spread.
+    int junction = 0;
+    for (int x = 0; x < R; x++){
+        for (int y = 0; y < C; y++){
+            if (member.at<uchar>(x, y)) continue;
+            vector<Vec3f> col; vector<float> gr;
+            for (int dx = -2; dx <= 2; dx++){
+                for (int dy = -2; dy <= 2; dy++){
+                    if (!inside(x + dx, y + dy) || !flat.at<uchar>(x + dx, y + dy)) continue;
+                    Vec3f cn = rgb.at<Vec3f>(x + dx, y + dy);
+                    bool known = false;
+                    for (const auto &k : col){ Vec3f dn = cn - k; if (dn.dot(dn) < newRegionColour * newRegionColour) known = true; }
+                    if (!known){ col.push_back(cn); gr.push_back(F.at<float>(x + dx, y + dy)); }
+                }
+            }
+            if (col.empty()) continue;
+
+            Vec3f c = rgb.at<Vec3f>(x, y);
+            const int n = col.size();
+            float bestRes = 1e9f, pred = 0.0f;
+            auto take = [&](float res, float p){ if (res < bestRes - 1e-4f){ bestRes = res; pred = p; } };
+            for (int i = 0; i < n; i++)                                   // one region colour
+                take(norm(c - col[i]), gr[i]);
+            for (int i = 0; i < n; i++){                                  // blend of two
+                for (int j = i + 1; j < n; j++){
+                    Vec3f v = col[j] - col[i]; float l = v.dot(v);
+                    if (l < 1e-8f) continue;
+                    float t = (c - col[i]).dot(v) / l;
+                    if (t < 0.0f || t > 1.0f) continue;
+                    take(norm(c - col[i] - t * v), (1.0f - t) * gr[i] + t * gr[j]);
+                }
+            }
+            for (int i = 0; i < n; i++){                                  // blend of three
+                for (int j = i + 1; j < n; j++){
+                    for (int k = j + 1; k < n; k++){
+                        Vec3f u = col[j] - col[i], v = col[k] - col[i], q = c - col[i];
+                        float uu = u.dot(u), uv = u.dot(v), vv = v.dot(v), det = uu * vv - uv * uv;
+                        if (fabs(det) < 1e-10f) continue;
+                        float a = (vv * u.dot(q) - uv * v.dot(q)) / det, b = (uu * v.dot(q) - uv * u.dot(q)) / det;
+                        if (a < 0.0f || b < 0.0f || a + b > 1.0f) continue;
+                        take(norm(q - a * u - b * v), (1.0f - a - b) * gr[i] + a * gr[j] + b * gr[k]);
+                    }
+                }
+            }
+            if (bestRes > maxResidual) continue;                          // colour is not a blend of the regions
+            if (fabs(out.at<float>(x, y) - pred) > maxBlendError){
+                if (out.at<float>(x, y) == F.at<float>(x, y)) changed++;
+                out.at<float>(x, y) = pred;
+                junction++;
+            }
+        }
+    }
+
     cerr << "edge repair (extension): " << changed << " pixels changed ("
-         << 100.0 * changed / image.total() << " %)" << endl;
+         << 100.0 * changed / image.total() << " %), " << junction << " of them at junctions" << endl;
     return out;
 }
 
