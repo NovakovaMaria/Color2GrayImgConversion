@@ -29,12 +29,13 @@ make
 ### Execution
 
 ```
-./ZhangWan24 [<input_image>] [<max_k>] [<sigma>] 
+./ZhangWan24 [<input_image>] [<max_k>] [<sigma>] [<ordering>]
 ```
 
 - ```input_image``` is color image input for conversion,
 - ```max_k``` is maximum number of quantized colors (clusters),
 - ```sigma``` controls the spread of the Laplace kernel's influence.
+- ```ordering``` (optional) selects how gray values are assigned to the quantized colors: 1 = by rgb2gray value (paper Sec. 3.2.1), 2 = by weighted Lab distance (paper Sec. 3.2.2, default).
 
 ## Examples Of The Conversion
 

@@ -180,8 +180,10 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
  * @brief Ordering grayscale colors
  * 
  * @param image input image
+ * @param method 1 = order by rgb2gray value of the quantized colors (paper Sec. 3.2.1, Eq. 11)
+ *               2 = order by weighted distance from the basic color (paper Sec. 3.2.2, Algorithm 2)
  */
-void ColorToGrayConverter::ordering(Mat image){
+void ColorToGrayConverter::ordering(Mat image, int method){
 
     vector<vector<pair<Point, Vec3f>>> clusters = this->clusters;
     vector<Vec3f> centers = this->centers;
@@ -192,7 +194,7 @@ void ColorToGrayConverter::ordering(Mat image){
 
     vector<float> grey(k); 
 
-    // select two colors with the biggest distance
+    // select two colors with the biggest distance (needed by method 2 only)
     for (int i = 0; i < k - 1; i++){
         Vec3f color1 = centers[i];
         for (int j = i+1; j < k; j++){
@@ -214,10 +216,11 @@ void ColorToGrayConverter::ordering(Mat image){
 
     Vec3f basic_color = centers[i0];
 
-    // compute distances between basic color and all quantizied colors
+    // method 1 (Eq. 11): sort key is the rgb2gray value of the quantizied color
+    // method 2 (Eq. 13): sort key is the distance between basic color and the quantizied color
     for (int i = 0; i < k; i++){
         Vec3f color = centers[i];
-        distance = weightedEuclidean(color, basic_color);
+        distance = (method == 1) ? rgb2grayOfCenter(color) : weightedEuclidean(color, basic_color);
         storage.push_back(make_pair(i,distance));
     }
 
@@ -231,7 +234,7 @@ void ColorToGrayConverter::ordering(Mat image){
         }
     );
 
-    // assign grey colors to quantizied colors based on distance
+    // assign evenly spaced grey colors to quantizied colors based on the sorted keys (Eq. 11 / Eq. 14)
     for (int m = 1; m <= k; m++){
         int index = storage[m-1].first;
         grey[index] = static_cast<float>(m - 1) / (k - 1);
@@ -582,6 +585,20 @@ float ColorToGrayConverter::M_k(float MSE_k, float MSEG_k) {
 /************ PART 2 - HELPER FUNCTIONS ************/
 
 /**
+ * @brief rgb2gray value of a quantizied color (Eq. 11), in [0,1]
+ * 
+ * @param labColor quantizied color as stored in centers (OpenCV 8-bit Lab encoding: L*255/100, a+128, b+128)
+ * @return float gray value
+ */
+float ColorToGrayConverter::rgb2grayOfCenter(const Vec3f& labColor){
+    // convert back to RGB through true Lab values (L in [0,100], a and b centered on 0)
+    Mat lab(1, 1, CV_32FC3, Scalar(labColor[0] * 100.0f / 255.0f, labColor[1] - 128.0f, labColor[2] - 128.0f)), bgr;
+    cvtColor(lab, bgr, COLOR_Lab2BGR);
+    Vec3f c = bgr.at<Vec3f>(0, 0);
+    return 0.2989f * c[2] + 0.5870f * c[1] + 0.1140f * c[0]; // weights of the paper
+}
+
+/**
  * @brief Compute weighted Euclidean Distance
  * 
  * @param color1 color value 
@@ -712,9 +729,10 @@ Mat ColorToGrayConverter::convertToQuantizedImage(const Mat& originalImage, cons
  */
 int main(int argc, char* argv[]) {
     
-    if (argc != 4) {
-        cerr << "Usage: " << argv[0] << " <image_path> <max_k> <sensitivity>\n";
+    if (argc != 4 && argc != 5) {
+        cerr << "Usage: " << argv[0] << " <image_path> <max_k> <sensitivity> [<ordering>]\n";
         cerr << "Please provide an image path, max number of clusters (max_k), and sensitivity.\n";
+        cerr << "Optional ordering: 1 = rgb2gray ordering (Eq. 11), 2 = distance ordering (Algorithm 2, default).\n";
         return 1;
     }
 
@@ -738,7 +756,7 @@ int main(int argc, char* argv[]) {
     float theta_1 = 0.5; 
     
     converter.quantizeColors(image, k, max_k, theta_0, theta_1);
-    converter.ordering(image);
+    converter.ordering(image, (argc == 5) ? atoi(argv[4]) : 2);
     converter.createGrayScale(image, sigma);
     
     return 0;

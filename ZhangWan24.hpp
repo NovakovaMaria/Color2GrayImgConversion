@@ -21,7 +21,7 @@ using namespace cv;
 class ColorToGrayConverter {
 public:
     void quantizeColors(cv::Mat &image, int &k, int max_k, float theta_0, float theta_1);
-    void ordering(cv::Mat image);
+    void ordering(cv::Mat image, int method = 2);
     void createGrayScale(cv::Mat image, float sigma);
 
 private:
@@ -37,6 +37,7 @@ private:
     float Entropy(cv::Mat img);
     bool classification(float E);
     float M_k(float MSE_k, float MSEG_k);
+    float rgb2grayOfCenter(const cv::Vec3f& labColor);
     float weightedEuclidean(const cv::Vec3f& color1, const cv::Vec3f& color2);
     float gaussianKernel(const cv::Vec3f& color1, const cv::Vec3f& color2, float sigma);
     float laplaceKernel(const cv::Vec3f& color1, const cv::Vec3f& color2, float sigma);
