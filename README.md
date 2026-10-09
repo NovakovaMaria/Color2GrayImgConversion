@@ -34,11 +34,28 @@ make
 
 - ```input_image``` is color image input for conversion,
 - ```max_k``` is maximum number of quantized colors (clusters),
-- ```sigma``` controls the spread of the Laplace kernel's influence. All colour values are normalised to [0,1] as in the paper, so sigma is on that scale too (e.g. 0.1; the paper gives no value).
+- ```sigma``` controls the spread of the Laplace kernel's influence. All colour values are normalised to [0,1] as in the paper, so sigma is on that scale too (e.g. 0.1, the paper gives no value).
 - ```ordering``` (optional) selects how gray values are assigned to the quantized colors: 1 = by rgb2gray value (paper Sec. 3.2.1), 2 = by weighted Lab distance (paper Sec. 3.2.2, default).
+ 
+## Interpretation Of The Paper
+
+The paper contradicts itself in a few places (text vs. figures vs. equations) and leaves some values out. Where it contradicts itself, this implementation follows the reading that is supported by two independent places in the paper, or the only reading that gives a working algorithm.
+
+| Place in the paper | What is printed | Implemented | Reason |
+|---|---|---|---|
+| Sec. 3.1 text vs. captions of Fig. 4 and Fig. 5 | text: quantization "directly in the CIELab color space"; captions: "RGB color space with perceptual distance in the CIELab color space (our method)" | RGB centroids, CIELab distance | both captions agree, the text itself calls the Lab-only result "unnatural", and delta = 1/255 in Eq. (1) is the step of an 8-bit pixel value |
+| Eq. (5), MSEG | absolute error \|g(x) - g(Q(x))\| | squared error | named "mean square error of gray"; in Fig. 7 MSE, MSEG and M are all ~3e-4 at k = 30, which is only possible for a squared gray error |
+| Scale of theta_0, theta_1 | 0.0004, 0.00065, scale not stated | all values normalised to [0,1], Lab as L/100, (a+128)/255, (b+128)/255 | the paper normalises 8-bit values to [0,1]; with this the thresholds stop at k = 7-9 on the simple test images, while detailed photos reach max_k |
+| Eq. (4) | (MSE[i] - MSE[i-1]) / MSE[i-1] <= eps | absolute value of the relative change | the MSE decreases, so without the absolute value the loop would always stop after one iteration |
+| Eq. (8) | log, maximum entropy 8 | log2 | the maximum is 8 only with log2 |
+| Eq. (15) | exp(-\|\|x - x_c\|\| / (2 sigma^2)) | squared distance | definition of the Gaussian kernel (not used, Laplace kernel Eq. (17) is used) |
+| Eq. (16) | a_i inside the sum | k x k linear system solved for a_j | text: k unknowns with a unique solution (Cramer's rule) |
+| D_PCA (Sec. 3.1) | "the maximum number of the pixels on this direction" | first principal component of the pixels of the split colour | PCA |
+
+Not given in the paper, chosen here: sigma of the Laplace kernel (command-line parameter, e.g. 0.1 on the [0,1] scale) and the per-cluster MSE used to pick the colour to split (mean squared error of the cluster).
 
 ## Examples Of The Conversion
-
+ 
 ![Natural image before conversion](https://github.com/NovakovaMaria/Color2GrayImgConversion/blob/main/results/natural/parots_sigma25/parots.png)
 ![Natural image after conversion](https://github.com/NovakovaMaria/Color2GrayImgConversion/blob/main/results/natural/parots_sigma25/gray_withstep3.png)
 
