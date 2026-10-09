@@ -64,7 +64,7 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
         mse_k = MSE_k(imageLab, centers, clusters);
 
         // STEP 5
-        if (((abs(mse_k - prevMSE_k)) / prevMSE_k) < pow(10, -6)) break;
+        if (mse_k == 0 || ((abs(mse_k - prevMSE_k)) / prevMSE_k) < pow(10, -6)) break;
 
         clusters = clusterImage(imageLab, centers);
 
@@ -110,7 +110,7 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
             mse_k = MSE_k(imageLab, centers, clusters);
 
             // STEP 5
-            if (((abs(mse_k - prevMSE_k)) / prevMSE_k) < pow(10, -6)) break;
+            if (mse_k == 0 || ((abs(mse_k - prevMSE_k)) / prevMSE_k) < pow(10, -6)) break;
 
             clusters = clusterImage(imageLab, centers);
 
