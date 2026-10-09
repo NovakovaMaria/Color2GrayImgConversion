@@ -260,21 +260,19 @@ void ColorToGrayConverter::createGrayScale(Mat image, float sigma){
     int k = centers.size();
 
     vector<float> gray = this->grayvalues; 
-    vector<float> a(k); 
+    vector<float> a(k);
 
-    float sum;
-
-    // determine weights between quantizied colors using RBF
-    for (int i = 0; i < k; i++){ 
-        Vec3f color1 = centers[i]; 
-        float greycolor1 = gray[i];
-        sum = 0.0;
+    // determine weights a_j by solving the k x k linear system of Eq. (16):
+    //   g_i = sum_j a_j * phi(x_i, x_j),  i = 1..k   <=>   Phi * a = g
+    Mat Phi(k, k, CV_64F), G(k, 1, CV_64F), A;
+    for (int i = 0; i < k; i++){
+        G.at<double>(i) = gray[i];
         for (int j = 0; j < k; j++){
-                Vec3f color2 = centers[j]; 
-                sum += laplaceKernel(color1, color2, sigma);             
+            Phi.at<double>(i, j) = laplaceKernel(centers[i], centers[j], sigma);
         }
-        a[i] = greycolor1 / sum;
     }
+    if (!solve(Phi, G, A, DECOMP_LU)) solve(Phi, G, A, DECOMP_SVD);
+    for (int i = 0; i < k; i++) a[i] = static_cast<float>(A.at<double>(i));
 
     float f_x;
 
