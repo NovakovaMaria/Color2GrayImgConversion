@@ -529,9 +529,10 @@ float ColorToGrayConverter::MSEG_k(Mat image, vector<Vec3f> centers, vector<vect
             Point coords = cluster_pixel.first;
             float color = image.at<float>(coords);
 
-            // compute absolute difference between color in the grayscale image and computed average graycolor in the cluster
-            float diff = abs(color - gQx);
-            mse += diff;
+            // squared difference between color in the grayscale image and computed average graycolor in the cluster
+            // (Eq. 5 prints |.|, but MSEG is a mean SQUARE error and Fig. 7 shows it on the scale of MSE)
+            float diff = color - gQx;
+            mse += diff * diff;
         }
     }
 
