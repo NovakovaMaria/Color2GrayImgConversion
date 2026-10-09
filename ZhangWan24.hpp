@@ -22,7 +22,7 @@ class ColorToGrayConverter {
 public:
     void quantizeColors(cv::Mat &image, int &k, int max_k, float theta_0, float theta_1);
     void ordering(cv::Mat image, int method = 2);
-    void createGrayScale(cv::Mat image, float sigma);
+    void createGrayScale(cv::Mat image, float sigma, bool edgeFix = false);
 
 private:
     cv::Vec3f computePrincipalDirection(const cv::Mat& image);
@@ -42,6 +42,7 @@ private:
     float gaussianKernel(const cv::Vec3f& color1, const cv::Vec3f& color2, float sigma);
     float laplaceKernel(const cv::Vec3f& color1, const cv::Vec3f& color2, float sigma);
     float clamp(float value);
+    cv::Mat repairEdgePixels(const cv::Mat &image, const cv::Mat &F);
     float getGreyValue(cv::Vec3f img_color, std::vector<float> a, float sigma);
     cv::Mat convertToGrayQuantizedImage(const cv::Mat& originalImage, const std::vector<float>& centroids, const std::vector<std::vector<std::pair<cv::Point, cv::Vec3f>>>& clusters);
     cv::Mat convertToQuantizedImage(const cv::Mat& originalImage, const std::vector<cv::Vec3f>& centroids, const vector<vector<pair<Point, Vec3f>>>& clusters);

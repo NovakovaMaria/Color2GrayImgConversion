@@ -29,14 +29,15 @@ make
 ### Execution
 
 ```
-./ZhangWan24 [<input_image>] [<max_k>] [<sigma>] [<ordering>]
+./ZhangWan24 [<input_image>] [<max_k>] [<sigma>] [<ordering>] [<edge_repair>]
 ```
 
 - ```input_image``` is color image input for conversion,
 - ```max_k``` is maximum number of quantized colors (clusters),
-- ```sigma``` controls the spread of the Laplace kernel's influence. All colour values are normalised to [0,1] as in the paper, so sigma is on that scale too (e.g. 0.1, the paper gives no value).
+- ```sigma``` controls the spread of the Laplace kernel's influence. All colour values are normalised to [0,1] as in the paper, so sigma is on that scale too (e.g. 0.1; the paper gives no value).
 - ```ordering``` (optional) selects how gray values are assigned to the quantized colors: 1 = by rgb2gray value (paper Sec. 3.2.1), 2 = by weighted Lab distance (paper Sec. 3.2.2, default).
- 
+- ```edge_repair``` (optional, **extension, not part of the paper**): 1 = repair the gray value of blended (anti-aliased) edge pixels, 0 = off (default, pure method of the paper). See "Extension" below.
+
 ## Interpretation Of The Paper
 
 The paper contradicts itself in a few places (text vs. figures vs. equations) and leaves some values out. Where it contradicts itself, this implementation follows the reading that is supported by two independent places in the paper, or the only reading that gives a working algorithm.
@@ -54,8 +55,14 @@ The paper contradicts itself in a few places (text vs. figures vs. equations) an
 
 Not given in the paper, chosen here: sigma of the Laplace kernel (command-line parameter, e.g. 0.1 on the [0,1] scale) and the per-cluster MSE used to pick the colour to split (mean squared error of the cluster).
 
+## Extension (not part of the paper)
+
+The method maps every colour to a gray value without looking at where the pixel is. Pixels on the border of two regions often have a blended colour (anti-aliasing), and such a colour can be closer to a third salient colour (step 2) or fall between two RBF centres (step 3). It is then mapped to a gray value outside the range of the two regions, which shows up as thin dark or white lines along region borders, mostly in synthetic images.
+
+With ```edge_repair``` = 1, a pixel whose RGB colour is a linear blend of the colours of two opposite pixels (distance 1 or 2, four directions), and whose gray value lies outside the gray range of those two pixels, gets the same blend of their two gray values. All other pixels are unchanged. On the kaleidoscope test image this removes the border lines (pixels changed: 1-3 %); on photos it changes 1.5-6 % of the pixels, only along colour edges. Pixels where three or more regions meet are not repaired (they are not a blend of two colours).
+
 ## Examples Of The Conversion
- 
+
 ![Natural image before conversion](https://github.com/NovakovaMaria/Color2GrayImgConversion/blob/main/results/natural/parots_sigma25/parots.png)
 ![Natural image after conversion](https://github.com/NovakovaMaria/Color2GrayImgConversion/blob/main/results/natural/parots_sigma25/gray_withstep3.png)
 

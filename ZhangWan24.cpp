@@ -283,7 +283,7 @@ void ColorToGrayConverter::ordering(Mat image, int method){
  * @param image input image
  * @param sigma scaling parameter for Laplace Kernel
  */
-void ColorToGrayConverter::createGrayScale(Mat image, float sigma){
+void ColorToGrayConverter::createGrayScale(Mat image, float sigma, bool edgeFix){
     vector<Vec3f> centers = this->centers;
     int k = centers.size();
 
@@ -310,14 +310,24 @@ void ColorToGrayConverter::createGrayScale(Mat image, float sigma){
 
     cvtColor(image, grayImage, COLOR_BGR2GRAY);
 
-    // assign gray value to each pixel
+    // assign gray value to each pixel (Eq. 16-18)
+    Mat F(image.rows, image.cols, CV_32F);
     for (int x = 0; x < image.rows; x++){
         for (int y = 0; y < image.cols; y++){
             Vec3f img_color = imageLab.at<Vec3f>(x,y);
 
             f_x = getGreyValue(img_color, a, sigma);
 
-            grayImage.at<uchar>(x, y) = static_cast<uchar>(clamp(f_x)*255);
+            F.at<float>(x, y) = clamp(f_x);
+        }
+    }
+
+    // optional extension, NOT part of the paper
+    if (edgeFix) F = repairEdgePixels(image, F);
+
+    for (int x = 0; x < image.rows; x++){
+        for (int y = 0; y < image.cols; y++){
+            grayImage.at<uchar>(x, y) = static_cast<uchar>(F.at<float>(x, y)*255);
         }
     }
     
@@ -645,6 +655,75 @@ float ColorToGrayConverter::weightedEuclidean(const Vec3f& color1, const Vec3f& 
 /************ PART 3 - HELPER FUNCTIONS ************/
 
 /**
+ * @brief EXTENSION, NOT PART OF THE PAPER: repair the gray value of blended (anti-aliased) edge pixels.
+ *
+ * The method maps colours to gray values without looking at the position of a pixel. A pixel on the
+ * border of two regions often has a blended colour c_p = (1-t)*c_A + t*c_B of the colours on both sides,
+ * and such a colour can be mapped to a gray value outside the range of the two sides, which shows up
+ * as thin dark or white lines along region borders.
+ *
+ * For every pixel, pairs of pixels on opposite sides (distance 1 and 2, horizontal, vertical and both
+ * diagonals) are tested. If the pixel's RGB colour lies on the segment between the two colours
+ * (residual <= 0.04, 0 <= t <= 1) and the two colours really differ (distance >= 0.1), the pair with
+ * the largest colour difference is used. Only if the pixel's gray value lies outside the gray range of
+ * that pair (by more than 4/255) it is replaced by the same blend of the two gray values,
+ * (1-t)*g_A + t*g_B. All other pixels are left unchanged.
+ *
+ * @param image input image (BGR, 8-bit)
+ * @param F gray values in [0,1] from Eq. (18)
+ * @return Mat repaired gray values in [0,1]
+ */
+Mat ColorToGrayConverter::repairEdgePixels(const Mat &image, const Mat &F){
+    const float maxResidual = 0.04f, minEdge = 0.1f, eps = 4.0f / 255.0f;
+    const int dirs[4][2] = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
+
+    Mat rgb;
+    image.convertTo(rgb, CV_32F, 1/255.0);
+    Mat out = F.clone();
+    int changed = 0;
+
+    for (int x = 0; x < image.rows; x++){
+        for (int y = 0; y < image.cols; y++){
+            Vec3f c = rgb.at<Vec3f>(x, y);
+            float bestEdge = -1.0f, bestT = 0.0f, gA = 0.0f, gB = 0.0f;
+
+            for (const auto &d : dirs){
+                for (int s = 1; s <= 2; s++){
+                    int xa = x - s * d[0], ya = y - s * d[1], xb = x + s * d[0], yb = y + s * d[1];
+                    if (xa < 0 || xb < 0 || xa >= image.rows || xb >= image.rows ||
+                        ya < 0 || yb < 0 || ya >= image.cols || yb >= image.cols) continue;
+
+                    Vec3f cA = rgb.at<Vec3f>(xa, ya), cB = rgb.at<Vec3f>(xb, yb), v = cB - cA;
+                    float len2 = v.dot(v);
+                    if (len2 < minEdge * minEdge) continue;              // no real edge between A and B
+
+                    float t = (c - cA).dot(v) / len2;
+                    if (t < 0.0f || t > 1.0f) continue;                  // not between the two colours
+                    Vec3f r = c - (cA + t * v);
+                    if (r.dot(r) > maxResidual * maxResidual) continue;  // not a blend of the two colours
+
+                    if (len2 > bestEdge){
+                        bestEdge = len2; bestT = t;
+                        gA = F.at<float>(xa, ya); gB = F.at<float>(xb, yb);
+                    }
+                }
+            }
+
+            if (bestEdge < 0.0f) continue;
+            float g = F.at<float>(x, y);
+            if (g < min(gA, gB) - eps || g > max(gA, gB) + eps){
+                out.at<float>(x, y) = (1.0f - bestT) * gA + bestT * gB;
+                changed++;
+            }
+        }
+    }
+
+    cerr << "edge repair (extension): " << changed << " pixels changed ("
+         << 100.0 * changed / image.total() << " %)" << endl;
+    return out;
+}
+
+/**
  * @brief RBF function - Gaussian
  * 
  * @param color1 color value
@@ -760,10 +839,11 @@ Mat ColorToGrayConverter::convertToQuantizedImage(const Mat& originalImage, cons
  */
 int main(int argc, char* argv[]) {
     
-    if (argc != 4 && argc != 5) {
-        cerr << "Usage: " << argv[0] << " <image_path> <max_k> <sensitivity> [<ordering>]\n";
+    if (argc < 4 || argc > 6) {
+        cerr << "Usage: " << argv[0] << " <image_path> <max_k> <sensitivity> [<ordering>] [<edge_repair>]\n";
         cerr << "Please provide an image path, max number of clusters (max_k), and sensitivity.\n";
         cerr << "Optional ordering: 1 = rgb2gray ordering (Eq. 11), 2 = distance ordering (Algorithm 2, default).\n";
+        cerr << "Optional edge_repair: 1 = repair blended edge pixels (extension, not in the paper), 0 = off (default).\n";
         return 1;
     }
 
@@ -787,8 +867,8 @@ int main(int argc, char* argv[]) {
     float theta_1 = 0.00065; // paper value (values normalised to [0,1])
     
     converter.quantizeColors(image, k, max_k, theta_0, theta_1);
-    converter.ordering(image, (argc == 5) ? atoi(argv[4]) : 2);
-    converter.createGrayScale(image, sigma);
+    converter.ordering(image, (argc >= 5) ? atoi(argv[4]) : 2);
+    converter.createGrayScale(image, sigma, (argc == 6) && atoi(argv[5]) == 1);
     
     return 0;
 }
