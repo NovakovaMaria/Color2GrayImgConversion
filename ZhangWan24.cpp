@@ -7,6 +7,13 @@
 
 #include "ZhangWan24.hpp"
 
+// pixels (Lab values) of one cluster as an N x 1 three-channel matrix, used for the PCA of that cluster
+static Mat clusterPixels(const vector<pair<Point, Vec3f>> &cluster) {
+    Mat data(static_cast<int>(cluster.size()), 1, CV_32FC3);
+    for (size_t i = 0; i < cluster.size(); i++) data.at<Vec3f>(static_cast<int>(i)) = cluster[i].second;
+    return data;
+}
+
 /************ PART 1 ************/
 
 /**
@@ -86,7 +93,7 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
     // (take the stored centre: after the updates above it is no longer bit-identical to c_0,
     //  and expandCentroids() finds the centre to replace by exact comparison)
     c_0 = centers[0];
-    expandCentroids(c_0, k, imageLab, &centers);
+    expandCentroids(c_0, k, clusterPixels(clusters[0]), &centers);
 
     // iterate till maximum number condition is not met
     while (k <= max_k) {
@@ -138,7 +145,8 @@ void ColorToGrayConverter::quantizeColors(Mat &image, int &k, int max_k, float t
 
         c_0 = centers[position_mse];
 
-        expandCentroids(c_0, k, imageLab, &centers);
+        // principal direction of the pixels that belong to c_0 (paper, Sec. 3.1)
+        expandCentroids(c_0, k, clusterPixels(clusters[position_mse]), &centers);
 
         clusters = clusterImage(imageLab, centers);
 
@@ -318,7 +326,7 @@ Vec3f ColorToGrayConverter::computePrincipalDirection(const Mat& image) {
  * 
  * @param c_0 coordinates of centroid from which two new are computed
  * @param k current number of quantizied colors
- * @param img input image
+ * @param img pixels (Lab) that belong to c_0, used for the PCA direction
  * @param centers centroids (quantizied colors)
  */
 void ColorToGrayConverter::expandCentroids(Vec3f c_0, int &k, Mat img, vector<Vec3f> *centers) {
