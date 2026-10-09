@@ -654,7 +654,7 @@ float ColorToGrayConverter::weightedEuclidean(const Vec3f& color1, const Vec3f& 
  */
 float ColorToGrayConverter::gaussianKernel(const Vec3f& color1, const Vec3f& color2, float sigma){
     float euclid = euclideanDistance(color1, color2);
-    return exp(- euclid / (2*sigma*sigma));
+    return exp(- euclid * euclid / (2*sigma*sigma)); // Eq. (15) is printed without the square
 }
 
 /**
